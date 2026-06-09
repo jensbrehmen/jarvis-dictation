@@ -1,0 +1,28 @@
+[project]
+name = "jarvis-dictation"
+version = "0.1.0"
+description = "Minimal macOS background dictation MVP using local MLX Parakeet ASR."
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "mlx>=0.30.0",
+  "numpy>=1.24",
+  "parakeet-mlx>=0.4.0",
+  "pyobjc-framework-AVFoundation>=10.0",
+  "pyobjc-framework-Cocoa>=10.0",
+  "pyobjc-framework-Quartz>=10.0",
+  "pynput>=1.7.6",
+  "pyperclip>=1.8.2",
+  "sounddevice>=0.4.6",
+]
+
+[project.scripts]
+jarvis-dictation = "jarvis_dictation.app:main"
+jarvis-dictation-permissions = "jarvis_dictation.permissions:main"
+jarvis-dictation-prepare = "jarvis_dictation.prepare:main"
+jarvis-dictation-run = "jarvis_dictation.run:main"
+jarvis-dictation-server = "jarvis_dictation.model_server:main"
+jarvis-dictation-service = "jarvis_dictation.service:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
