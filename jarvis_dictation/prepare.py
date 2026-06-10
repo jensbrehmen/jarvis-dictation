@@ -11,10 +11,15 @@ import numpy as np
 import sounddevice as sd
 
 from jarvis_dictation.app import (
-    MLXParakeetTranscriber,
+    MLXTranscriber,
     SAMPLE_RATE,
 )
-from jarvis_dictation.models import DEFAULT_MODEL_PRESET, MODEL_PRESETS, resolve_model_name
+from jarvis_dictation.models import (
+    DEFAULT_MODEL_PRESET,
+    MODEL_PRESETS,
+    resolve_model_engine,
+    resolve_model_name,
+)
 
 
 APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "JarvisDictation"
@@ -60,7 +65,8 @@ def check_audio_devices() -> dict:
 
 def prepare_model(args: argparse.Namespace) -> dict:
     model_name = resolve_model_name(args.model_preset, args.model_name)
-    transcriber = MLXParakeetTranscriber(model_name=model_name)
+    model_engine = resolve_model_engine(args.model_preset, args.model_name)
+    transcriber = MLXTranscriber(model_name=model_name, engine=model_engine)
     if args.smoke_seconds > 0:
         silence = np.zeros(int(SAMPLE_RATE * args.smoke_seconds), dtype=np.float32)
         transcriber.accept_audio(silence, final=True)
@@ -68,6 +74,7 @@ def prepare_model(args: argparse.Namespace) -> dict:
     return {
         "model_preset": args.model_preset,
         "model_name": model_name,
+        "model_engine": model_engine,
         "device": "mlx",
     }
 

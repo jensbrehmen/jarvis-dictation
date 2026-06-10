@@ -13,9 +13,14 @@ from typing import Any
 import numpy as np
 
 from jarvis_dictation.app import (
-    MLXParakeetTranscriber,
+    MLXTranscriber,
 )
-from jarvis_dictation.models import DEFAULT_MODEL_PRESET, MODEL_PRESETS, resolve_model_name
+from jarvis_dictation.models import (
+    DEFAULT_MODEL_PRESET,
+    MODEL_PRESETS,
+    resolve_model_engine,
+    resolve_model_name,
+)
 from jarvis_dictation.prepare import APP_SUPPORT_DIR
 
 
@@ -119,8 +124,9 @@ def serve(args: argparse.Namespace) -> None:
         SOCKET_PATH.unlink()
 
     model_name = resolve_model_name(args.model_preset, args.model_name)
-    logging.info("Loading %s into persistent MLX model server", model_name)
-    transcriber = MLXParakeetTranscriber(model_name=model_name)
+    model_engine = resolve_model_engine(args.model_preset, args.model_name)
+    logging.info("Loading %s through %s into persistent MLX model server", model_name, model_engine)
+    transcriber = MLXTranscriber(model_name=model_name, engine=model_engine)
     logging.info("Model server ready at %s", SOCKET_PATH)
 
     listener = Listener(str(SOCKET_PATH), family="AF_UNIX")
@@ -155,6 +161,7 @@ def serve(args: argparse.Namespace) -> None:
                                     "ready": True,
                                     "model_preset": args.model_preset,
                                     "model_name": model_name,
+                                    "model_engine": model_engine,
                                 }
                             )
                         elif cmd == "reset":

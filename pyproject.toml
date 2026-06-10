@@ -1,7 +1,7 @@
 [project]
 name = "jarvis-dictation"
 version = "0.1.0"
-description = "Minimal macOS background dictation MVP using local MLX Parakeet ASR."
+description = "Minimal macOS background dictation MVP using local MLX speech recognition."
 requires-python = ">=3.10,<3.13"
 dependencies = [
   "mlx>=0.30.0",
@@ -13,6 +13,11 @@ dependencies = [
   "pynput>=1.7.6",
   "pyperclip>=1.8.2",
   "sounddevice>=0.4.6",
+]
+
+[project.optional-dependencies]
+nemotron = [
+  "mlx-audio[stt] @ git+https://github.com/Blaizzy/mlx-audio.git",
 ]
 
 [project.scripts]

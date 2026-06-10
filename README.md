@@ -144,10 +144,11 @@ Default dictation behavior is tuned for reliability:
 
 ## MLX Model
 
-The app supports two MLX model presets:
+The app supports three MLX model presets:
 
 - `default`: `mlx-community/parakeet-tdt-0.6b-v3`, larger multilingual model, best current default quality.
 - `small-en`: `mlx-community/parakeet-tdt_ctc-110m`, smaller English model, lower RAM target, likely lower quality.
+- `nemotron`: `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit`, quantized multilingual Nemotron 3.5 ASR through MLX Audio.
 
 Prepare and run the small English model:
 
@@ -169,7 +170,31 @@ jarvis-dictation-service uninstall
 jarvis-dictation-service install --model-preset small-en
 ```
 
-Both presets transcribe the final recorded utterance only, matching the app's normal dictation flow.
+All presets transcribe the final recorded utterance only, matching the app's normal dictation flow.
+
+### Nemotron 3.5
+
+Nemotron requires MLX Audio's current GitHub version because its ASR support has not shipped in the latest PyPI release yet:
+
+```bash
+python -m pip install -e '.[nemotron]'
+```
+
+Then prepare and run it:
+
+```bash
+jarvis-dictation-prepare --model-preset nemotron
+jarvis-dictation-run --model-preset nemotron
+```
+
+Or install it as the persistent login server:
+
+```bash
+jarvis-dictation-service uninstall
+jarvis-dictation-service install --model-preset nemotron
+```
+
+Nemotron is architected for streaming, but this preset intentionally keeps the app's existing reliable behavior: record the utterance, then run one final transcription pass after Right Command is pressed again.
 
 The `sonic-speech` INT8/INT4 checkpoints are interesting, but the current `parakeet-mlx` loader rejects their quantization tensors. Use them only with a loader version that explicitly supports those checkpoints:
 

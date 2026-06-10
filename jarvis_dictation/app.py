@@ -371,10 +371,11 @@ def _write_temp_wav(samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> Path
     return path
 
 
-class MLXParakeetTranscriber:
-    def __init__(self, model_name: str = MLX_MODEL_NAME) -> None:
+class MLXTranscriber:
+    def __init__(self, model_name: str = MLX_MODEL_NAME, engine: str = "parakeet-mlx") -> None:
         self.model_name = model_name
-        self.model = self._load_model(model_name)
+        self.engine = engine
+        self.model = self._load_model()
 
     def reset(self) -> None:
         pass
@@ -384,7 +385,10 @@ class MLXParakeetTranscriber:
             return ""
         path = _write_temp_wav(samples)
         try:
-            result = self.model.transcribe(str(path))
+            if self.engine == "mlx-audio":
+                result = self.model.generate(str(path))
+            else:
+                result = self.model.transcribe(str(path))
         finally:
             try:
                 path.unlink()
@@ -392,7 +396,22 @@ class MLXParakeetTranscriber:
                 pass
         return _normalize_transcribe_result(result).strip()
 
-    def _load_model(self, model_name: str):  # noqa: ANN202
+    def _load_model(self):  # noqa: ANN202
+        if self.engine == "mlx-audio":
+            try:
+                from mlx_audio.stt import load
+            except ImportError as exc:
+                raise RuntimeError(
+                    "The Nemotron preset requires the optional MLX Audio dependency. Install it with: "
+                    "python -m pip install -e '.[nemotron]'"
+                ) from exc
+
+            logging.info("Loading %s with MLX Audio", self.model_name)
+            return load(self.model_name)
+
+        if self.engine != "parakeet-mlx":
+            raise ValueError(f"Unknown MLX transcription engine: {self.engine}")
+
         try:
             from parakeet_mlx import from_pretrained
         except ImportError:
@@ -407,19 +426,19 @@ class MLXParakeetTranscriber:
         try:
             import mlx.core as mx
 
-            logging.info("Loading %s with MLX bfloat16", model_name)
-            return from_pretrained(model_name, dtype=mx.bfloat16)
+            logging.info("Loading %s with MLX bfloat16", self.model_name)
+            return from_pretrained(self.model_name, dtype=mx.bfloat16)
         except ValueError as exc:
             if "not in model" in str(exc) and ("scales" in str(exc) or "biases" in str(exc)):
                 raise RuntimeError(
-                    f"MLX model `{model_name}` looks like a quantized checkpoint that the installed "
+                    f"MLX model `{self.model_name}` looks like a quantized checkpoint that the installed "
                     "`parakeet-mlx` loader cannot read. Use the supported default "
                     f"`{MLX_MODEL_NAME}`, or install a loader version that explicitly supports that quantized model."
                 ) from exc
             raise
         except TypeError:
-            logging.info("Loading %s with MLX", model_name)
-            return from_pretrained(model_name)
+            logging.info("Loading %s with MLX", self.model_name)
+            return from_pretrained(self.model_name)
 
 
 class DictationSession(threading.Thread):
