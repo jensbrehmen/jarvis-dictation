@@ -196,6 +196,37 @@ jarvis-dictation-service install --model-preset nemotron
 
 Nemotron is architected for streaming, but this preset intentionally keeps the app's existing reliable behavior: record the utterance, then run one final transcription pass after Right Command is pressed again.
 
+#### Nemotron Specs and Performance
+
+| Specification | Value |
+| --- | --- |
+| Parameters | 600M |
+| Architecture | Cache-aware FastConformer encoder with RNN-T decoder |
+| MLX checkpoint | 8-bit weights, group size 64 |
+| Model download | Approximately 756 MB |
+| Language coverage | 40 language-locales |
+| Streaming chunks | 80, 160, 320, 560, or 1,120 ms |
+| Output formatting | Punctuation and capitalization |
+
+Measured on the development MacBook with the persistent Nemotron server loaded:
+
+| Measurement | Result |
+| --- | --- |
+| Idle physical footprint | Approximately 1.1 GB |
+| Observed peak physical footprint | Approximately 1.9 GB |
+| MLX/Metal allocation | Approximately 765 MB |
+| Idle CPU | Approximately 0% |
+
+These figures were measured with macOS `footprint` and `vmmap`. Normal `ps` RSS can substantially under-report MLX memory because model weights and inference buffers are allocated through Metal and Apple unified memory.
+
+NVIDIA reports up to 240 simultaneous streams at the 80 ms setting on one H100, compared with 14 streams for Parakeet RNNT 1.1B. This is a server-throughput comparison, not a claim that a single transcription is 17 times faster on a MacBook. Published English FLEURS word error rates range from 9.43% at 80 ms chunks to 7.91% at 1,120 ms chunks when the language is supplied.
+
+References:
+
+- [MLX 8-bit model card](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit)
+- [Official NVIDIA model and benchmarks](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
+- [MLX Audio Nemotron implementation](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/nemotron_asr/README.md)
+
 The `sonic-speech` INT8/INT4 checkpoints are interesting, but the current `parakeet-mlx` loader rejects their quantization tensors. Use them only with a loader version that explicitly supports those checkpoints:
 
 ```bash
