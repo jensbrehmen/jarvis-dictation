@@ -7,3 +7,6 @@ __pycache__/
 .ruff_cache/
 .nemo/
 .cache/
+build/
+dist/
+.DS_Store

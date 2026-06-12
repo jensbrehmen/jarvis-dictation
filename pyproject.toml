@@ -16,12 +16,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+app = [
+  "py2app>=0.28.10",
+]
 nemotron = [
   "mlx-audio[stt] @ git+https://github.com/Blaizzy/mlx-audio.git",
 ]
 
 [project.scripts]
 jarvis-dictation = "jarvis_dictation.app:main"
+jarvis-dictation-mac = "jarvis_dictation.mac_app:main"
 jarvis-dictation-permissions = "jarvis_dictation.permissions:main"
 jarvis-dictation-prepare = "jarvis_dictation.prepare:main"
 jarvis-dictation-run = "jarvis_dictation.run:main"

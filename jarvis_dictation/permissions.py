@@ -48,7 +48,7 @@ def request_microphone_permission(timeout_secs: float = 30.0) -> bool | None:
 
 def request_accessibility_permission() -> bool | None:
     try:
-        from Quartz import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
+        from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
     except Exception as exc:  # pragma: no cover - depends on macOS frameworks
         logging.debug("Quartz accessibility API unavailable: %s", exc)
         return None
@@ -74,9 +74,10 @@ def force_microphone_prompt_via_sounddevice(duration_secs: float = 1.0) -> bool:
         return False
 
 
-def request_macos_permissions() -> None:
+def request_macos_permissions(include_accessibility: bool = True) -> None:
     mic = request_microphone_permission()
-    request_accessibility_permission()
+    if include_accessibility:
+        request_accessibility_permission()
 
     if mic is not True:
         logging.info("Opening microphone briefly to trigger the system prompt if macOS allows it")

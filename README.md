@@ -2,18 +2,65 @@
 
 Fully local macOS background dictation from the terminal.
 
+## Native Menu-Bar App
+
+The project now includes a native AppKit menu-bar application. It keeps Right Command as the default shortcut and adds:
+
+- menu-bar status and dictation controls
+- automatic model startup when the app opens
+- a glass-styled settings window
+- model switching between Parakeet 0.6B, Parakeet 110M, and Nemotron 3.5
+- system-default or explicit microphone selection
+- press-to-record global shortcut, with Right Command as the default
+- toggle and hold-to-talk shortcut activation modes
+- persisted sound, overlay, clipboard, and startup preferences
+- model restart, model logs, privacy settings, and clean quit behavior
+
+Run it directly during development:
+
+```bash
+source .venv/bin/activate
+python -m pip install -e '.[app]'
+jarvis-dictation-mac
+```
+
+Build the local development app bundle:
+
+```bash
+python setup_app.py py2app -A
+open "dist/Jarvis Dictation.app"
+```
+
+Alias mode creates a real, ad-hoc-signed `.app`, but it still uses this source tree and `.venv`. It is intended for local development, not distribution to another Mac. A standalone signed and notarized build is the next packaging milestone.
+
 ## Behavior
 
-- Press Right Command once to start dictation.
+- Press the configured shortcut once to start dictation.
 - A polished bottom-center overlay appears.
 - While recording, animated input wave bars update in the overlay.
-- Press Right Command again to stop.
+- Press the shortcut again to stop.
 - The final transcript is pasted into the currently focused input field.
+- The overlay closes as soon as the final transcript is ready.
 - The previous clipboard contents are restored after paste.
+
+## Settings
+
+Open **Settings** from the Jarvis menu-bar icon.
+
+- **Speech model:** selects the local model that Jarvis keeps warm. Changing it restarts the model server.
+- **Microphone:** follows the macOS system input by default, or can target a specific connected microphone. If that device is unavailable later, Jarvis falls back to the system default.
+- **Shortcut:** click the shortcut control, then press the key you want to use. Press `Escape` to cancel without changing it. Right Command is the default.
+- **Activation:** `Toggle` starts and stops dictation on separate shortcut presses. `Hold` records only while the shortcut is held down.
+- **Sound cues:** enables the short start and stop sound.
+- **Recording overlay:** shows or hides the glass recording indicator and live audio waveform.
+- **Preserve clipboard:** restores the previous clipboard contents shortly after insertion. If you copy something else first, Jarvis leaves the newer clipboard contents untouched.
+- **Warm model on launch:** starts and loads the selected model when Jarvis opens, trading memory usage for faster first dictation.
+
+Shortcut, microphone, activation, model, and behavior choices persist across app restarts.
 
 ## Model
 
-This uses MLX locally with Parakeet models from Hugging Face. No cloud APIs are used.
+This uses MLX locally with Parakeet or Nemotron models from Hugging Face. No cloud APIs are used.
 
 The app records locally and transcribes the full utterance once when you stop. The model server stays warm in the background so this final pass starts quickly.
 
@@ -98,7 +145,7 @@ For the fastest startup, install the model server as a macOS user LaunchAgent:
 jarvis-dictation-service install
 ```
 
-This starts the model server at login, keeping Parakeet warm in the background. After that, starting the overlay is quick:
+This starts the selected model server at login, keeping it warm in the background. After that, starting the overlay is quick:
 
 ```bash
 jarvis-dictation
@@ -139,16 +186,16 @@ Default dictation behavior is tuned for reliability:
 
 - microphone blocks: 50 ms
 - no live transcript decode while recording
-- the full recorded utterance is transcribed once when you press Right Command again
+- the full recorded utterance is transcribed once when you press the shortcut again
 - the overlay still shows live microphone wave bars
 
 ## MLX Model
 
-The app supports three MLX model presets:
+The app supports three MLX model presets. Nemotron is selected by default:
 
-- `default`: `mlx-community/parakeet-tdt-0.6b-v3`, larger multilingual model, best current default quality.
-- `small-en`: `mlx-community/parakeet-tdt_ctc-110m`, smaller English model, lower RAM target, likely lower quality.
 - `nemotron`: `mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit`, quantized multilingual Nemotron 3.5 ASR through MLX Audio.
+- `default`: `mlx-community/parakeet-tdt-0.6b-v3`, larger multilingual Parakeet model.
+- `small-en`: `mlx-community/parakeet-tdt_ctc-110m`, smaller English model, lower RAM target, likely lower quality.
 
 Prepare and run the small English model:
 
@@ -194,7 +241,7 @@ jarvis-dictation-service uninstall
 jarvis-dictation-service install --model-preset nemotron
 ```
 
-Nemotron is architected for streaming, but this preset intentionally keeps the app's existing reliable behavior: record the utterance, then run one final transcription pass after Right Command is pressed again.
+Nemotron is architected for streaming, but this preset intentionally keeps the app's existing reliable behavior: record the utterance, then run one final transcription pass after the shortcut is pressed again.
 
 #### Nemotron Specs and Performance
 
@@ -248,14 +295,17 @@ Run `jarvis-dictation-permissions` to let macOS ask for permissions where it can
 
 - Privacy & Security -> Microphone: required for `sounddevice` microphone input.
 - Privacy & Security -> Accessibility: required for global hotkey listening and synthetic Cmd+V paste.
-- Privacy & Security -> Input Monitoring: required for reliable global Right Command detection.
+- Privacy & Security -> Input Monitoring: required for reliable global shortcut detection.
 
-macOS does not always show an Input Monitoring prompt for terminal Python processes, so add your terminal app manually there if Right Command is not detected.
+macOS does not always show an Input Monitoring prompt for terminal Python processes, so add your terminal app manually there if the shortcut is not detected.
 
 ## Notes
 
 - Audio is captured as 16 kHz mono float32.
-- Right Command is handled with `pynput`.
+- The configurable global shortcut is handled with `pynput`.
 - The floating overlay uses PyObjC/AppKit.
-- Text insertion uses `pyperclip` and synthetic Cmd+V, then restores the clipboard.
+- Text insertion uses `pyperclip` and synthetic Cmd+V. The overlay closes before clipboard restoration finishes in the background.
+- App logs are stored at `~/Library/Application Support/JarvisDictation/mac-app.log`.
+- Model-server logs are stored at `~/Library/Application Support/JarvisDictation/mac-app-model-server.log`.
+- The menu-bar **App Log** button opens the application log, while **Restart Model** reloads the currently selected model.
 - Packaging is intentionally skipped until the terminal MVP is known-good on the target Mac.

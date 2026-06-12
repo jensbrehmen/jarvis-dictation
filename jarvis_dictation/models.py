@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-DEFAULT_MODEL_PRESET = "default"
+DEFAULT_MODEL_PRESET = "nemotron"
 MODEL_PRESETS = {
     "default": "mlx-community/parakeet-tdt-0.6b-v3",
     "nemotron": "mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit",
@@ -33,3 +33,10 @@ def resolve_model_engine(model_preset: str = DEFAULT_MODEL_PRESET, model_name: s
     except KeyError as exc:
         valid = ", ".join(sorted(MODEL_PRESETS))
         raise ValueError(f"Unknown model preset `{model_preset}`. Valid presets: {valid}") from exc
+
+
+def preset_for_model_name(model_name: str) -> str | None:
+    for preset, preset_model_name in MODEL_PRESETS.items():
+        if preset_model_name == model_name:
+            return preset
+    return None

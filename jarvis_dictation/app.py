@@ -18,16 +18,60 @@ import sounddevice as sd
 from pynput import keyboard
 
 from jarvis_dictation.models import MLX_MODEL_NAME
+from jarvis_dictation.shortcuts import (
+    DEFAULT_SHORTCUT,
+    normalize_shortcut,
+    serialize_key,
+    shortcut_display_name,
+    shortcut_matches,
+)
 
 SAMPLE_RATE = 16_000
 CHANNELS = 1
 
 
+def available_input_devices() -> list[str]:
+    try:
+        devices = sd.query_devices()
+    except Exception as exc:
+        logging.warning("Could not enumerate microphone devices: %s", exc)
+        return []
+
+    names: list[str] = []
+    for device in devices:
+        if int(device.get("max_input_channels", 0)) <= 0:
+            continue
+        name = str(device.get("name", "")).strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def resolve_input_device(device_name: str | None) -> int | None:
+    if not device_name:
+        return None
+    try:
+        devices = sd.query_devices()
+    except Exception as exc:
+        logging.warning("Could not resolve microphone `%s`: %s", device_name, exc)
+        return None
+
+    for index, device in enumerate(devices):
+        if int(device.get("max_input_channels", 0)) > 0 and str(device.get("name", "")).strip() == device_name:
+            return index
+
+    logging.warning("Configured microphone `%s` is unavailable; using the system default", device_name)
+    return None
+
+
 class FloatingOverlay:
     def __init__(self) -> None:
+        import AppKit
         from AppKit import (
             NSApplication,
             NSApplicationActivationPolicyAccessory,
+            NSAppearance,
+            NSAppearanceNameAqua,
             NSBackingStoreBuffered,
             NSColor,
             NSFloatingWindowLevel,
@@ -70,6 +114,8 @@ class FloatingOverlay:
         self.window.setLevel_(NSFloatingWindowLevel)
         self.window.setIgnoresMouseEvents_(True)
         self.window.setHasShadow_(False)
+        light_appearance = NSAppearance.appearanceNamed_(NSAppearanceNameAqua)
+        self.window.setAppearance_(light_appearance)
 
         root = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, window_width, window_height))
         root.setWantsLayer_(True)
@@ -95,30 +141,33 @@ class FloatingOverlay:
         shadow_host.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
         root.addSubview_(shadow_host)
 
-        container = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, self.width, self.height))
-        container.setMaterial_(NSVisualEffectMaterialPopover)
-        container.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
-        container.setState_(NSVisualEffectStateActive)
-        container.setWantsLayer_(True)
-        container.layer().setCornerRadius_(20)
-        container.layer().setMasksToBounds_(True)
-        container.layer().setBorderWidth_(0.35)
-        container.layer().setBorderColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.18).CGColor())
-        shadow_host.addSubview_(container)
-
         glass_tint = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, self.width, self.height))
         glass_tint.setWantsLayer_(True)
         glass_tint.layer().setCornerRadius_(20)
         glass_tint.layer().setMasksToBounds_(True)
         glass_tint.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.96, 0.98, 1.0, 0.045).CGColor()
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.98, 0.99, 1.0, 0.20).CGColor()
         )
-        container.addSubview_(glass_tint)
 
-        top_highlight = NSView.alloc().initWithFrame_(NSMakeRect(20, self.height - 2, self.width - 40, 1))
-        top_highlight.setWantsLayer_(True)
-        top_highlight.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.52).CGColor())
-        glass_tint.addSubview_(top_highlight)
+        glass_class = getattr(AppKit, "NSGlassEffectView", None)
+        if glass_class is not None:
+            container = glass_class.alloc().initWithFrame_(NSMakeRect(0, 0, self.width, self.height))
+            container.setAppearance_(light_appearance)
+            container.setStyle_(getattr(AppKit, "NSGlassEffectViewStyleClear"))
+            container.setCornerRadius_(20)
+            container.setTintColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.16))
+            container.setContentView_(glass_tint)
+        else:
+            container = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, self.width, self.height))
+            container.setAppearance_(light_appearance)
+            container.setMaterial_(NSVisualEffectMaterialPopover)
+            container.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+            container.setState_(NSVisualEffectStateActive)
+            container.setWantsLayer_(True)
+            container.layer().setCornerRadius_(20)
+            container.layer().setMasksToBounds_(True)
+            container.addSubview_(glass_tint)
+        shadow_host.addSubview_(container)
 
         self.status_dot = NSView.alloc().initWithFrame_(NSMakeRect(22, 19, 10, 10))
         self.status_dot.setWantsLayer_(True)
@@ -239,32 +288,72 @@ class FloatingOverlay:
 
 
 class ClipboardPaster:
-    def __init__(self) -> None:
-        self.keyboard = keyboard.Controller()
+    def __init__(self, preserve_clipboard: bool = True) -> None:
+        self.preserve_clipboard = preserve_clipboard
 
-    def paste_text_preserving_clipboard(self, text: str) -> None:
+    def paste_text_preserving_clipboard(self, text: str) -> bool:
         if not text.strip():
-            return
+            return False
+        started_at = time.monotonic()
+
+        from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
+        from Quartz import (
+            CGEventCreateKeyboardEvent,
+            CGEventPost,
+            CGEventSetFlags,
+            kCGEventFlagMaskCommand,
+            kCGHIDEventTap,
+        )
+
+        if not AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: False}):
+            logging.error("Cannot paste transcript because Accessibility permission is not granted")
+            return False
 
         previous = None
-        try:
-            previous = pyperclip.paste()
-        except Exception as exc:
-            logging.warning("Could not read clipboard before paste: %s", exc)
+        if self.preserve_clipboard:
+            try:
+                previous = pyperclip.paste()
+            except Exception as exc:
+                logging.warning("Could not read clipboard before paste: %s", exc)
 
-        pyperclip.copy(text)
-        time.sleep(0.08)
-        self.keyboard.press(keyboard.Key.cmd)
-        self.keyboard.press("v")
-        self.keyboard.release("v")
-        self.keyboard.release(keyboard.Key.cmd)
-        time.sleep(0.35)
+        try:
+            pyperclip.copy(text)
+            time.sleep(0.12)
+
+            key_down = CGEventCreateKeyboardEvent(None, 9, True)
+            key_up = CGEventCreateKeyboardEvent(None, 9, False)
+            CGEventSetFlags(key_down, kCGEventFlagMaskCommand)
+            CGEventSetFlags(key_up, kCGEventFlagMaskCommand)
+            CGEventPost(kCGHIDEventTap, key_down)
+            CGEventPost(kCGHIDEventTap, key_up)
+            logging.info(
+                "Posted transcript paste event (%d characters) in %.3fs",
+                len(text),
+                time.monotonic() - started_at,
+            )
+        except Exception:
+            logging.exception("Could not paste transcript")
+            return False
 
         if previous is not None:
-            try:
-                pyperclip.copy(previous)
-            except Exception as exc:
-                logging.warning("Could not restore clipboard after paste: %s", exc)
+            threading.Thread(
+                target=self._restore_clipboard,
+                args=(previous, text),
+                daemon=True,
+            ).start()
+        return True
+
+    @staticmethod
+    def _restore_clipboard(previous: str, inserted_text: str) -> None:
+        time.sleep(0.65)
+        try:
+            if pyperclip.paste() != inserted_text:
+                logging.info("Clipboard changed after dictation; preserving the newer contents")
+                return
+            pyperclip.copy(previous)
+            logging.info("Restored clipboard after dictation")
+        except Exception as exc:
+            logging.warning("Could not restore clipboard after paste: %s", exc)
 
 
 class SoundCues:
@@ -309,19 +398,27 @@ class AudioRecorder:
         audio_queue: queue.Queue[np.ndarray],
         sample_rate: int = SAMPLE_RATE,
         on_level: Callable[[float], None] | None = None,
+        device_name: str | None = None,
     ) -> None:
         self.audio_queue = audio_queue
         self.sample_rate = sample_rate
         self.on_level = on_level
+        self.device_name = device_name
         self.stream: Optional[sd.InputStream] = None
 
     def start(self) -> None:
+        device = resolve_input_device(self.device_name)
+        if self.device_name and device is not None:
+            logging.info("Using microphone: %s", self.device_name)
+        elif self.device_name:
+            logging.info("Using system-default microphone because the selected device is unavailable")
         self.stream = sd.InputStream(
             samplerate=self.sample_rate,
             channels=CHANNELS,
             dtype="float32",
             blocksize=int(self.sample_rate * 0.05),
             callback=self._callback,
+            device=device,
         )
         self.stream.start()
 
@@ -471,7 +568,14 @@ class DictationSession(threading.Thread):
 
         try:
             audio = np.concatenate(buffered_audio) if buffered_audio else np.zeros(0, dtype=np.float32)
+            transcription_started_at = time.monotonic()
             final_text = self.transcriber.accept_audio(audio, final=True)
+            audio_duration = audio.size / SAMPLE_RATE
+            logging.info(
+                "Final transcription completed in %.3fs for %.2fs of audio",
+                time.monotonic() - transcription_started_at,
+                audio_duration,
+            )
         except Exception:
             logging.exception("Final transcription failed")
             final_text = ""
@@ -482,19 +586,65 @@ class DictationController:
     def __init__(
         self,
         overlay: FloatingOverlay,
+        on_state: Callable[[str], None] | None = None,
+        show_overlay: bool = True,
+        play_sounds: bool = True,
+        preserve_clipboard: bool = True,
+        input_device: str | None = None,
     ) -> None:
         self.overlay = overlay
+        self.on_state = on_state
+        self.show_overlay = show_overlay
+        self.input_device = input_device
         self.lock = threading.Lock()
         self.model_lock = threading.Lock()
         self.loading = False
         self.recording = False
+        self.finalizing = False
         self.cancel_start = False
+        self.shutting_down = False
         self.transcriber = None
         self.audio_queue: Optional[queue.Queue[np.ndarray]] = None
         self.recorder: Optional[AudioRecorder] = None
         self.session: Optional[DictationSession] = None
-        self.paster = ClipboardPaster()
+        self.paster = ClipboardPaster(preserve_clipboard=preserve_clipboard)
         self.sounds = SoundCues()
+        self.sounds.enabled = play_sounds
+
+    def apply_preferences(
+        self,
+        *,
+        show_overlay: bool,
+        play_sounds: bool,
+        preserve_clipboard: bool,
+        input_device: str | None,
+    ) -> None:
+        self.show_overlay = show_overlay
+        self.sounds.enabled = play_sounds
+        self.paster.preserve_clipboard = preserve_clipboard
+        self.input_device = input_device
+
+    def disconnect_transcriber(self) -> None:
+        with self.model_lock:
+            transcriber = self.transcriber
+            self.transcriber = None
+        if transcriber is not None and hasattr(transcriber, "close"):
+            transcriber.close()
+
+    def _set_state(self, state: str) -> None:
+        if self.on_state is not None:
+            self.on_state(state)
+
+    def _show_overlay(self, text: str) -> None:
+        if self.show_overlay:
+            self.overlay.show(text)
+
+    def _update_overlay(self, text: str) -> None:
+        if self.show_overlay:
+            self.overlay.update(text)
+
+    def _hide_overlay(self) -> None:
+        self.overlay.hide()
 
     def preload(self) -> None:
         threading.Thread(target=self._preload_model, daemon=True).start()
@@ -502,9 +652,11 @@ class DictationController:
     def _preload_model(self) -> None:
         try:
             self._ensure_transcriber()
-            logging.info("Parakeet transcriber is ready")
+            logging.info("Speech transcriber is ready")
+            self._set_state("ready")
         except Exception as exc:
             logging.warning("Background transcriber connection failed: %s", exc)
+            self._set_state("offline")
 
     def _ensure_transcriber(self):
         with self.model_lock:
@@ -516,26 +668,40 @@ class DictationController:
 
     def toggle(self) -> None:
         with self.lock:
+            if self.shutting_down:
+                return
+            if self.finalizing:
+                return
             should_stop = self.recording or self.loading
         if should_stop:
-            threading.Thread(target=self.stop, daemon=True).start()
+            self.request_stop()
         else:
-            threading.Thread(target=self.start, daemon=True).start()
+            self.request_start()
 
-    def start(self) -> None:
+    def request_start(self) -> None:
         with self.lock:
-            if self.loading or self.recording:
+            if self.shutting_down or self.loading or self.recording or self.finalizing:
                 return
             self.loading = True
             self.cancel_start = False
+        threading.Thread(target=self._start_recording, daemon=True).start()
 
-        self.overlay.show("Connecting to local Parakeet...")
+    def request_stop(self) -> None:
+        threading.Thread(target=self.stop, daemon=True).start()
+
+    def start(self) -> None:
+        self.request_start()
+
+    def _start_recording(self) -> None:
+        self._set_state("connecting")
+        self._show_overlay("Connecting to local model...")
         self.sounds.play_start()
         try:
             transcriber = self._ensure_transcriber()
         except Exception:
             logging.exception("Could not connect to ASR model")
-            self.overlay.show("Start jarvis-dictation-server first.")
+            self._show_overlay("Start the model server first.")
+            self._set_state("offline")
             with self.lock:
                 self.loading = False
             return
@@ -544,11 +710,15 @@ class DictationController:
             if self.cancel_start:
                 self.loading = False
                 self.cancel_start = False
-                self.overlay.hide()
+                self._hide_overlay()
                 return
 
             self.audio_queue = queue.Queue()
-            self.recorder = AudioRecorder(self.audio_queue, on_level=self.overlay.update_level)
+            self.recorder = AudioRecorder(
+                self.audio_queue,
+                on_level=self.overlay.update_level,
+                device_name=self.input_device,
+            )
             self.session = DictationSession(
                 transcriber,
                 self.audio_queue,
@@ -560,7 +730,8 @@ class DictationController:
             self.session.start()
         except Exception:
             logging.exception("Could not start microphone recording")
-            self.overlay.show("Could not start microphone. Check permissions.")
+            self._show_overlay("Could not start microphone. Check permissions.")
+            self._set_state("error")
             with self.lock:
                 self.loading = False
             return
@@ -568,7 +739,8 @@ class DictationController:
         with self.lock:
             self.loading = False
             self.recording = True
-        self.overlay.show("Listening...")
+        self._set_state("recording")
+        self._show_overlay("Listening...")
 
     def stop(self) -> None:
         with self.lock:
@@ -578,10 +750,12 @@ class DictationController:
             if not self.recording:
                 return
             self.recording = False
+            self.finalizing = True
             recorder = self.recorder
             session = self.session
 
-        self.overlay.update("Finalizing...")
+        self._set_state("finalizing")
+        self._update_overlay("Finalizing...")
         self.sounds.play_stop()
         if recorder is not None:
             recorder.stop()
@@ -591,30 +765,79 @@ class DictationController:
 
     def _handle_final_text(self, text: str) -> None:
         self.overlay.update_level(0.0)
-        self.overlay.hide()
-        if text:
-            self.paster.paste_text_preserving_clipboard(text)
+        if not text:
+            logging.warning("Final transcription was empty")
+            self._hide_overlay()
+            with self.lock:
+                self.finalizing = False
+            self._set_state("ready")
+            return
+
+        logging.info("Final transcript ready (%d characters)", len(text))
+        self._hide_overlay()
+        if self.paster.paste_text_preserving_clipboard(text):
+            with self.lock:
+                self.finalizing = False
+            self._set_state("ready")
+            return
+
+        with self.lock:
+            self.finalizing = False
+        self._show_overlay("Allow Accessibility to paste.")
+        self._set_state("permission")
 
     def shutdown(self) -> None:
         with self.lock:
+            self.shutting_down = True
             recorder = self.recorder
             session = self.session
             self.recording = False
             self.loading = False
+            self.finalizing = False
         if recorder is not None:
             recorder.stop()
         if session is not None:
             session.stop()
-        transcriber = self.transcriber
-        if transcriber is not None and hasattr(transcriber, "close"):
-            transcriber.close()
+        self.disconnect_transcriber()
 
 
 class RightCommandHotkey:
-    def __init__(self, on_toggle: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        on_toggle: Callable[[], None],
+        on_start: Callable[[], None] | None = None,
+        on_stop: Callable[[], None] | None = None,
+        activation_mode: str = "toggle",
+        shortcut: str = DEFAULT_SHORTCUT,
+    ) -> None:
         self.on_toggle = on_toggle
+        self.on_start = on_start or on_toggle
+        self.on_stop = on_stop or on_toggle
+        self.activation_mode = activation_mode
+        self.shortcut = normalize_shortcut(shortcut)
         self.down = False
+        self.capture_callback: Callable[[str | None], None] | None = None
+        self.capture_lock = threading.Lock()
         self.listener: Optional[keyboard.Listener] = None
+
+    def set_activation_mode(self, activation_mode: str) -> None:
+        self.activation_mode = "hold" if activation_mode == "hold" else "toggle"
+
+    def set_shortcut(self, shortcut: str) -> None:
+        self.shortcut = normalize_shortcut(shortcut)
+        self.down = False
+
+    def begin_capture(self, callback: Callable[[str | None], None]) -> None:
+        with self.capture_lock:
+            self.capture_callback = callback
+        self.down = False
+
+    def cancel_capture(self) -> None:
+        with self.capture_lock:
+            callback = self.capture_callback
+            self.capture_callback = None
+        if callback is not None:
+            callback(None)
 
     def start(self) -> None:
         self.listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
@@ -625,12 +848,37 @@ class RightCommandHotkey:
             self.listener.stop()
 
     def _on_press(self, key) -> None:  # noqa: ANN001
-        if key == keyboard.Key.cmd_r and not self.down:
+        with self.capture_lock:
+            capture_callback = self.capture_callback
+            if capture_callback is not None:
+                self.capture_callback = None
+
+        if capture_callback is not None:
+            if key == keyboard.Key.esc:
+                capture_callback(None)
+                return
+            shortcut = serialize_key(key)
+            if shortcut is None:
+                with self.capture_lock:
+                    self.capture_callback = capture_callback
+                return
+            capture_callback(shortcut)
+            return
+
+        if shortcut_matches(key, self.shortcut) and not self.down:
             self.down = True
-            self.on_toggle()
+            if self.activation_mode == "hold":
+                self.on_start()
+            else:
+                self.on_toggle()
 
     def _on_release(self, key) -> None:  # noqa: ANN001
-        if key == keyboard.Key.cmd_r:
+        with self.capture_lock:
+            if self.capture_callback is not None:
+                return
+        if shortcut_matches(key, self.shortcut):
+            if self.down and self.activation_mode == "hold":
+                self.on_stop()
             self.down = False
 
 
@@ -662,7 +910,11 @@ def main() -> None:
 
     overlay = FloatingOverlay()
     controller = DictationController(overlay)
-    hotkey = RightCommandHotkey(controller.toggle)
+    hotkey = RightCommandHotkey(
+        controller.toggle,
+        on_start=controller.request_start,
+        on_stop=controller.request_stop,
+    )
     hotkey.start()
     controller.preload()
 
@@ -680,7 +932,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, request_shutdown)
     signal.signal(signal.SIGTERM, request_shutdown)
 
-    logging.info("Jarvis dictation is running. Press Right Command to toggle.")
+    logging.info("Jarvis dictation is running. Press %s to toggle.", shortcut_display_name(DEFAULT_SHORTCUT))
     try:
         overlay.run()
     finally:
