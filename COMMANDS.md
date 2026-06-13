@@ -65,8 +65,12 @@ jarvis-dictation-run --model-preset nemotron
 Use a custom Hugging Face model or local path:
 
 ```bash
-jarvis-dictation-run --model-name mlx-community/my-custom-model
+jarvis-dictation-run \
+  --model-name mlx-community/my-custom-model \
+  --model-engine parakeet-mlx
 ```
+
+The native settings app also supports saving compatible custom models from the **Speech model** menu. Choose the MLX loader required by the checkpoint; arbitrary Transformers models are not supported.
 
 ---
 

@@ -10,6 +10,8 @@ import objc
 from AppKit import (
     NSApplication,
     NSApplicationActivationPolicyAccessory,
+    NSAlert,
+    NSAlertFirstButtonReturn,
     NSBackingStoreBuffered,
     NSButton,
     NSColor,
@@ -57,7 +59,13 @@ from jarvis_dictation.app import (
 )
 from jarvis_dictation.model_manager import MODEL_LOG_PATH, ModelManager
 from jarvis_dictation.model_server import get_server_info
-from jarvis_dictation.models import MODEL_PRESETS, preset_for_model_name
+from jarvis_dictation.models import (
+    BUILTIN_MODEL_SPECS,
+    MODEL_ENGINE_LABELS,
+    MODEL_PRESETS,
+    RECOMMENDED_MODEL_PRESET,
+    preset_for_model_name,
+)
 from jarvis_dictation.permissions import request_accessibility_permission, request_macos_permissions
 from jarvis_dictation.preferences import Preferences
 from jarvis_dictation.shortcuts import shortcut_display_name
@@ -71,7 +79,7 @@ MODEL_OPTIONS = (
 APP_LOG_PATH = MODEL_LOG_PATH.parent / "mac-app.log"
 MODEL_TITLE_BY_PRESET = {preset: title for preset, title, _, _ in MODEL_OPTIONS}
 MODEL_MENU_TITLE_BY_PRESET = {
-    "nemotron": "Nemotron 3.5 (Recommended)",
+    RECOMMENDED_MODEL_PRESET: "Nemotron 3.5 (Recommended)",
     "default": "Parakeet 0.6B",
     "small-en": "Parakeet 110M (English)",
 }
@@ -294,19 +302,17 @@ class SettingsWindowController(NSObject):
         self.model_button.setAlphaValue_(0.01)
         self.model_button.setFocusRingType_(NSFocusRingTypeNone)
         self.model_button.setRefusesFirstResponder_(True)
-        for preset, _, _, _ in MODEL_OPTIONS:
-            self.model_button.addItemWithTitle_(MODEL_MENU_TITLE_BY_PRESET[preset])
-            self.model_button.lastItem().setRepresentedObject_(preset)
         self.model_button.setTarget_(self)
         self.model_button.setAction_("modelChanged:")
         model_content.addSubview_(self.model_button)
-        self._update_model_selector(self.preferences.model_preset)
+        self._rebuild_model_menu()
+        self._update_model_selector(self.preferences.model_selection)
 
         self.model_description = _label("", NSMakeRect(294, 543, 261, 20), 11, NSFontWeightMedium, secondary)
         self.model_memory = _label("", NSMakeRect(294, 524, 261, 20), 11, NSFontWeightMedium, secondary)
         root.addSubview_(self.model_description)
         root.addSubview_(self.model_memory)
-        self._update_model_copy(self.preferences.model_preset)
+        self._update_model_copy(self.preferences.model_selection)
 
         input_heading = _label("Input", NSMakeRect(35, 480, 180, 22), 15, NSFontWeightBold, primary)
         root.addSubview_(input_heading)
@@ -489,6 +495,9 @@ class SettingsWindowController(NSObject):
         )
 
     def show(self) -> None:
+        self._rebuild_model_menu()
+        self._update_model_selector(self.preferences.model_selection)
+        self._update_model_copy(self.preferences.model_selection)
         self._refresh_input_devices()
         self.window.center()
         self.window.makeKeyAndOrderFront_(None)
@@ -524,13 +533,25 @@ class SettingsWindowController(NSObject):
         self.activation_control.setEnabled_(enabled)
 
     def modelChanged_(self, sender) -> None:  # noqa: ANN001
-        preset = str(sender.selectedItem().representedObject())
-        self._update_model_selector(preset)
-        self._update_model_copy(preset)
-        accepted = self.delegate.select_model_preset(preset)
+        selection = str(sender.selectedItem().representedObject())
+        if selection == "__add_custom__":
+            self._update_model_selector(self.preferences.model_selection)
+            self._show_add_model_dialog()
+            return
+        if selection == "__remove_custom__":
+            self._update_model_selector(self.preferences.model_selection)
+            self._remove_selected_custom_model()
+            return
+
+        self._update_model_selector(selection)
+        self._update_model_copy(selection)
+        accepted = self.delegate.select_model(selection)
         if not accepted:
-            self._update_model_selector(self.preferences.model_preset)
-            self._update_model_copy(self.preferences.model_preset)
+            self._update_model_selector(self.preferences.model_selection)
+            self._update_model_copy(self.preferences.model_selection)
+            return
+        self._rebuild_model_menu()
+        self._update_model_selector(selection)
 
     def preferenceChanged_(self, sender) -> None:  # noqa: ANN001
         self.preferences.play_sounds = self.sound_switch.state() == NSControlStateValueOn
@@ -577,17 +598,134 @@ class SettingsWindowController(NSObject):
     def openModelLog_(self, sender) -> None:  # noqa: ANN001
         NSWorkspace.sharedWorkspace().openURL_(NSURL.fileURLWithPath_(str(APP_LOG_PATH)))
 
-    def _update_model_copy(self, preset: str) -> None:
-        for option_preset, _, description, memory in MODEL_OPTIONS:
-            if option_preset == preset:
-                self.model_description.setStringValue_(description)
-                self.model_memory.setStringValue_(memory)
+    def _model_for_selection(self, selection: str):
+        if selection in BUILTIN_MODEL_SPECS:
+            return BUILTIN_MODEL_SPECS[selection]
+        for model in self.preferences.custom_models:
+            if model.key == selection:
+                return model
+        return BUILTIN_MODEL_SPECS[RECOMMENDED_MODEL_PRESET]
+
+    def _rebuild_model_menu(self) -> None:
+        selected = self.preferences.model_selection
+        self.model_button.removeAllItems()
+        for preset, _, _, _ in MODEL_OPTIONS:
+            self.model_button.addItemWithTitle_(MODEL_MENU_TITLE_BY_PRESET[preset])
+            self.model_button.lastItem().setRepresentedObject_(preset)
+
+        if self.preferences.custom_models:
+            self.model_button.menu().addItem_(NSMenuItem.separatorItem())
+            for model in self.preferences.custom_models:
+                self.model_button.addItemWithTitle_(model.title)
+                self.model_button.lastItem().setRepresentedObject_(model.key)
+
+        self.model_button.menu().addItem_(NSMenuItem.separatorItem())
+        self.model_button.addItemWithTitle_("Add Open Source Model...")
+        self.model_button.lastItem().setRepresentedObject_("__add_custom__")
+        if selected.startswith("custom:"):
+            self.model_button.addItemWithTitle_("Remove Current Custom Model")
+            self.model_button.lastItem().setRepresentedObject_("__remove_custom__")
+
+    def _update_model_copy(self, selection: str) -> None:
+        model = self._model_for_selection(selection)
+        self.model_description.setStringValue_(model.description)
+        self.model_memory.setStringValue_(model.detail)
+
+    def _update_model_selector(self, selection: str) -> None:
+        model = self._model_for_selection(selection)
+        title = MODEL_MENU_TITLE_BY_PRESET.get(selection, model.title)
+        self.model_title_label.setStringValue_(title)
+        for item in self.model_button.itemArray():
+            if str(item.representedObject()) == selection:
+                self.model_button.selectItem_(item)
                 return
 
-    def _update_model_selector(self, preset: str) -> None:
-        title = MODEL_MENU_TITLE_BY_PRESET.get(preset, MODEL_TITLE_BY_PRESET.get(preset, preset))
-        self.model_title_label.setStringValue_(title)
-        self.model_button.selectItemWithTitle_(title)
+    def _show_add_model_dialog(self) -> None:
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Add Open Source Model")
+        alert.setInformativeText_(
+            "Add a compatible Hugging Face ASR checkpoint. The model downloads locally when selected."
+        )
+        alert.addButtonWithTitle_("Add Model")
+        alert.addButtonWithTitle_("Cancel")
+
+        accessory = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 420, 142))
+        secondary = NSColor.secondaryLabelColor()
+
+        accessory.addSubview_(_label("Display name", NSMakeRect(0, 116, 120, 18), 11, NSFontWeightMedium, secondary))
+        title_field = NSTextField.alloc().initWithFrame_(NSMakeRect(126, 110, 294, 26))
+        title_field.setPlaceholderString_("My speech model")
+        accessory.addSubview_(title_field)
+
+        accessory.addSubview_(
+            _label("Hugging Face ID", NSMakeRect(0, 75, 120, 18), 11, NSFontWeightMedium, secondary)
+        )
+        model_field = NSTextField.alloc().initWithFrame_(NSMakeRect(126, 69, 294, 26))
+        model_field.setPlaceholderString_("organization/model-name")
+        accessory.addSubview_(model_field)
+
+        accessory.addSubview_(_label("MLX engine", NSMakeRect(0, 34, 120, 18), 11, NSFontWeightMedium, secondary))
+        engine_button = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(126, 28, 294, 28), False)
+        for engine, label in MODEL_ENGINE_LABELS.items():
+            engine_button.addItemWithTitle_(label)
+            engine_button.lastItem().setRepresentedObject_(engine)
+        accessory.addSubview_(engine_button)
+
+        hint = _label(
+            "Only checkpoints compatible with the selected loader can run.",
+            NSMakeRect(0, 0, 420, 18),
+            10,
+            NSFontWeightMedium,
+            secondary,
+        )
+        accessory.addSubview_(hint)
+        alert.setAccessoryView_(accessory)
+        alert.window().setInitialFirstResponder_(model_field)
+
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+
+        model_name = str(model_field.stringValue()).strip()
+        title = str(title_field.stringValue()).strip() or model_name.rsplit("/", 1)[-1]
+        engine = str(engine_button.selectedItem().representedObject())
+        if "/" not in model_name or any(character.isspace() for character in model_name):
+            self._show_model_error("Enter a Hugging Face model ID in the form organization/model-name.")
+            return
+
+        model = self.delegate.add_custom_model(title, model_name, engine)
+        if model is None:
+            return
+        self._rebuild_model_menu()
+        self._update_model_selector(model.key)
+        self._update_model_copy(model.key)
+
+    def _remove_selected_custom_model(self) -> None:
+        model = self.preferences.selected_model
+        if model.built_in:
+            return
+
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(f"Remove {model.title}?")
+        alert.setInformativeText_(
+            "This removes the model from Jarvis settings. Downloaded Hugging Face files remain in the local cache."
+        )
+        alert.addButtonWithTitle_("Remove")
+        alert.addButtonWithTitle_("Cancel")
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+
+        if self.delegate.remove_custom_model(model.key):
+            self._rebuild_model_menu()
+            self._update_model_selector(self.preferences.model_selection)
+            self._update_model_copy(self.preferences.model_selection)
+
+    @staticmethod
+    def _show_model_error(message: str) -> None:
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Could Not Add Model")
+        alert.setInformativeText_(message)
+        alert.addButtonWithTitle_("OK")
+        alert.runModal()
 
     def _refresh_input_devices(self) -> None:
         selected_device = self.preferences.input_device
@@ -673,7 +811,7 @@ class JarvisAppDelegate(NSObject):
         ).start()
 
         if self.preferences.start_model_on_launch:
-            self.model_manager.start_async(self.preferences.model_preset)
+            self.model_manager.start_async(self.preferences.selected_model)
         else:
             self._apply_status("stopped", "Model stopped")
 
@@ -745,17 +883,46 @@ class JarvisAppDelegate(NSObject):
     def quit_(self, sender) -> None:  # noqa: ANN001
         NSApplication.sharedApplication().terminate_(self)
 
-    def select_model_preset(self, preset: str) -> bool:
+    def select_model(self, selection: str) -> bool:
         if self.dictation_state in {"recording", "connecting", "finalizing"}:
             self._apply_status("error", "Stop dictation before switching models")
             return False
-        if preset not in MODEL_PRESETS:
+        valid_selections = set(MODEL_PRESETS) | {model.key for model in self.preferences.custom_models}
+        if selection not in valid_selections:
             return False
 
-        self.preferences.model_preset = preset
+        self.preferences.model_selection = selection
         self.preferences.synchronize()
         self.controller.disconnect_transcriber()
-        self.model_manager.restart_async(preset)
+        self.model_manager.restart_async(self.preferences.selected_model)
+        return True
+
+    def add_custom_model(self, title: str, model_name: str, engine: str):
+        if self.dictation_state in {"recording", "connecting", "finalizing"}:
+            self._apply_status("error", "Stop dictation before adding a model")
+            return None
+        try:
+            model = self.preferences.add_custom_model(title, model_name, engine)
+            self.preferences.model_selection = model.key
+            self.preferences.synchronize()
+        except ValueError as exc:
+            self.settings._show_model_error(str(exc))
+            return None
+
+        self.controller.disconnect_transcriber()
+        self.model_manager.restart_async(model)
+        return model
+
+    def remove_custom_model(self, key: str) -> bool:
+        if self.dictation_state in {"recording", "connecting", "finalizing"}:
+            self._apply_status("error", "Stop dictation before removing a model")
+            return False
+        removed = self.preferences.remove_custom_model(key)
+        if not removed:
+            return False
+        self.preferences.synchronize()
+        self.controller.disconnect_transcriber()
+        self.model_manager.restart_async(self.preferences.selected_model)
         return True
 
     def restart_model(self) -> None:
@@ -763,7 +930,7 @@ class JarvisAppDelegate(NSObject):
             self._apply_status("error", "Stop dictation before restarting the model")
             return
         self.controller.disconnect_transcriber()
-        self.model_manager.restart_async(self.preferences.model_preset)
+        self.model_manager.restart_async(self.preferences.selected_model)
 
     def begin_shortcut_capture(self) -> None:
         if self.dictation_state in {"recording", "connecting", "finalizing"}:

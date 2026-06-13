@@ -24,7 +24,11 @@ def launchctl_domain() -> str:
     return f"gui/{os.getuid()}"
 
 
-def build_plist(model_preset: str = DEFAULT_MODEL_PRESET, model_name: str | None = None) -> dict:
+def build_plist(
+    model_preset: str = DEFAULT_MODEL_PRESET,
+    model_name: str | None = None,
+    model_engine: str | None = None,
+) -> dict:
     APP_SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
     program_arguments = [
         sys.executable,
@@ -35,6 +39,8 @@ def build_plist(model_preset: str = DEFAULT_MODEL_PRESET, model_name: str | None
     ]
     if model_name:
         program_arguments.extend(["--model-name", model_name])
+    if model_engine:
+        program_arguments.extend(["--model-engine", model_engine])
     return {
         "Label": LABEL,
         "ProgramArguments": program_arguments,
@@ -49,10 +55,17 @@ def build_plist(model_preset: str = DEFAULT_MODEL_PRESET, model_name: str | None
     }
 
 
-def write_plist(model_preset: str = DEFAULT_MODEL_PRESET, model_name: str | None = None) -> None:
+def write_plist(
+    model_preset: str = DEFAULT_MODEL_PRESET,
+    model_name: str | None = None,
+    model_engine: str | None = None,
+) -> None:
     LAUNCH_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
     with PLIST_PATH.open("wb") as file:
-        plistlib.dump(build_plist(model_preset=model_preset, model_name=model_name), file)
+        plistlib.dump(
+            build_plist(model_preset=model_preset, model_name=model_name, model_engine=model_engine),
+            file,
+        )
 
 
 def run_launchctl(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -60,8 +73,8 @@ def run_launchctl(args: list[str], check: bool = True) -> subprocess.CompletedPr
     return subprocess.run(["launchctl", *args], check=check, text=True, capture_output=True)
 
 
-def install(model_preset: str, model_name: str | None) -> None:
-    write_plist(model_preset=model_preset, model_name=model_name)
+def install(model_preset: str, model_name: str | None, model_engine: str | None = None) -> None:
+    write_plist(model_preset=model_preset, model_name=model_name, model_engine=model_engine)
     run_launchctl(["bootout", launchctl_domain(), str(PLIST_PATH)], check=False)
     run_launchctl(["bootstrap", launchctl_domain(), str(PLIST_PATH)])
     logging.info("Installed and started %s", LABEL)
@@ -78,9 +91,9 @@ def uninstall() -> None:
     logging.info("Uninstalled %s", LABEL)
 
 
-def start(model_preset: str, model_name: str | None) -> None:
+def start(model_preset: str, model_name: str | None, model_engine: str | None = None) -> None:
     if not PLIST_PATH.exists():
-        write_plist(model_preset=model_preset, model_name=model_name)
+        write_plist(model_preset=model_preset, model_name=model_name, model_engine=model_engine)
         run_launchctl(["bootstrap", launchctl_domain(), str(PLIST_PATH)], check=False)
     run_launchctl(["kickstart", "-k", f"{launchctl_domain()}/{LABEL}"], check=False)
     logging.info("Requested server start")
@@ -109,6 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("command", choices=["install", "uninstall", "start", "stop", "status"])
     parser.add_argument("--model-preset", choices=sorted(MODEL_PRESETS), default=DEFAULT_MODEL_PRESET)
     parser.add_argument("--model-name", default=None, help="Override the preset with a Hugging Face model id or local path.")
+    parser.add_argument("--model-engine", choices=["mlx-audio", "parakeet-mlx"], default=None)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args()
 
@@ -121,11 +135,11 @@ def main() -> None:
     )
 
     if args.command == "install":
-        install(model_preset=args.model_preset, model_name=args.model_name)
+        install(model_preset=args.model_preset, model_name=args.model_name, model_engine=args.model_engine)
     elif args.command == "uninstall":
         uninstall()
     elif args.command == "start":
-        start(model_preset=args.model_preset, model_name=args.model_name)
+        start(model_preset=args.model_preset, model_name=args.model_name, model_engine=args.model_engine)
     elif args.command == "stop":
         stop()
     elif args.command == "status":

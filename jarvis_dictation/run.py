@@ -8,7 +8,7 @@ import sys
 import time
 
 from jarvis_dictation.model_server import get_server_info, send_shutdown
-from jarvis_dictation.models import DEFAULT_MODEL_PRESET, MODEL_PRESETS, resolve_model_name
+from jarvis_dictation.models import DEFAULT_MODEL_PRESET, MODEL_PRESETS, resolve_model_engine, resolve_model_name
 
 
 def stop_process(process: subprocess.Popen, label: str) -> int:
@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Start Jarvis dictation server and app together.")
     parser.add_argument("--model-preset", choices=sorted(MODEL_PRESETS), default=DEFAULT_MODEL_PRESET)
     parser.add_argument("--model-name", default=None, help="Override the preset with a Hugging Face model id or local path.")
+    parser.add_argument("--model-engine", choices=["mlx-audio", "parakeet-mlx"], default=None)
     parser.add_argument("--server-timeout-secs", type=float, default=120.0)
     parser.add_argument("--keep-server", action="store_true", help="Leave the model server running after app exit.")
     parser.add_argument("--debug", action="store_true")
@@ -57,11 +58,15 @@ def main() -> None:
     started_server = False
     server_process: subprocess.Popen | None = None
     requested_model_name = resolve_model_name(args.model_preset, args.model_name)
+    requested_model_engine = resolve_model_engine(args.model_preset, args.model_name, args.model_engine)
 
     server_info = get_server_info()
     if server_info is not None:
         running_model_name = server_info.get("model_name")
-        if running_model_name != requested_model_name:
+        if (
+            running_model_name != requested_model_name
+            or server_info.get("model_engine") != requested_model_engine
+        ):
             raise SystemExit(
                 "Model server is already running with "
                 f"`{running_model_name}`. Stop it first with `jarvis-dictation-server --stop`, "
@@ -79,6 +84,8 @@ def main() -> None:
         ]
         if args.model_name:
             server_cmd.extend(["--model-name", args.model_name])
+        if args.model_engine:
+            server_cmd.extend(["--model-engine", args.model_engine])
         server_process = subprocess.Popen(server_cmd)
         started_server = True
         try:

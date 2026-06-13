@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 
-from jarvis_dictation.models import DEFAULT_MODEL_PRESET, MODEL_PRESETS
+from jarvis_dictation.models import (
+    BUILTIN_MODEL_SPECS,
+    DEFAULT_MODEL_PRESET,
+    ModelSpec,
+    builtin_model_spec,
+    custom_model_spec,
+)
 from jarvis_dictation.shortcuts import DEFAULT_SHORTCUT, normalize_shortcut
 
 
@@ -22,9 +29,10 @@ class PreferenceDefaults:
 
 
 class Preferences:
-    PREFERENCES_VERSION = 2
+    PREFERENCES_VERSION = 3
     PREFERENCES_VERSION_KEY = "preferencesVersion"
     MODEL_PRESET_KEY = "modelPreset"
+    CUSTOM_MODELS_KEY = "customModels"
     INPUT_DEVICE_KEY = "inputDevice"
     SHORTCUT_KEY = "shortcut"
     ACTIVATION_MODE_KEY = "activationMode"
@@ -33,17 +41,18 @@ class Preferences:
     PRESERVE_CLIPBOARD_KEY = "preserveClipboard"
     START_MODEL_ON_LAUNCH_KEY = "startModelOnLaunch"
 
-    def __init__(self) -> None:
+    def __init__(self, defaults_store=None) -> None:
         from Foundation import NSUserDefaults
 
         defaults = PreferenceDefaults()
-        self.defaults = NSUserDefaults.standardUserDefaults()
+        self.defaults = defaults_store or NSUserDefaults.standardUserDefaults()
         saved_model_preset = self.defaults.objectForKey_(self.MODEL_PRESET_KEY)
         saved_shortcut = self.defaults.objectForKey_(self.SHORTCUT_KEY)
         saved_preferences_version = self.defaults.integerForKey_(self.PREFERENCES_VERSION_KEY)
         self.defaults.registerDefaults_(
             {
                 self.MODEL_PRESET_KEY: defaults.model_preset,
+                self.CUSTOM_MODELS_KEY: [],
                 self.INPUT_DEVICE_KEY: defaults.input_device,
                 self.SHORTCUT_KEY: defaults.shortcut,
                 self.ACTIVATION_MODE_KEY: defaults.activation_mode,
@@ -64,15 +73,93 @@ class Preferences:
             self.has_saved_model_preset = saved_model_preset is not None
 
     @property
-    def model_preset(self) -> str:
+    def model_selection(self) -> str:
         value = str(self.defaults.stringForKey_(self.MODEL_PRESET_KEY) or DEFAULT_MODEL_PRESET)
-        return value if value in MODEL_PRESETS else DEFAULT_MODEL_PRESET
+        valid_keys = set(BUILTIN_MODEL_SPECS) | {model.key for model in self.custom_models}
+        return value if value in valid_keys else DEFAULT_MODEL_PRESET
+
+    @model_selection.setter
+    def model_selection(self, value: str) -> None:
+        valid_keys = set(BUILTIN_MODEL_SPECS) | {model.key for model in self.custom_models}
+        if value not in valid_keys:
+            raise ValueError(f"Unknown model selection: {value}")
+        self.defaults.setObject_forKey_(value, self.MODEL_PRESET_KEY)
+
+    @property
+    def model_preset(self) -> str:
+        return self.model_selection
 
     @model_preset.setter
     def model_preset(self, value: str) -> None:
-        if value not in MODEL_PRESETS:
-            raise ValueError(f"Unknown model preset: {value}")
-        self.defaults.setObject_forKey_(value, self.MODEL_PRESET_KEY)
+        self.model_selection = value
+
+    @property
+    def custom_models(self) -> list[ModelSpec]:
+        payloads = self.defaults.arrayForKey_(self.CUSTOM_MODELS_KEY) or []
+        models = []
+        for payload in payloads:
+            model = custom_model_spec(payload)
+            if model is not None:
+                models.append(model)
+        return models
+
+    @property
+    def selected_model(self) -> ModelSpec:
+        selection = self.model_selection
+        if selection in BUILTIN_MODEL_SPECS:
+            return builtin_model_spec(selection)
+        for model in self.custom_models:
+            if model.key == selection:
+                return model
+        return builtin_model_spec(DEFAULT_MODEL_PRESET)
+
+    def add_custom_model(self, title: str, model_name: str, engine: str) -> ModelSpec:
+        title = title.strip()
+        model_name = model_name.strip()
+        if not title or not model_name:
+            raise ValueError("Custom models require a display name and Hugging Face model ID")
+
+        payloads = [self._model_payload(model) for model in self.custom_models]
+        for payload in payloads:
+            if payload["model_name"] == model_name and payload["engine"] == engine:
+                payload["title"] = title
+                self.defaults.setObject_forKey_(payloads, self.CUSTOM_MODELS_KEY)
+                model = custom_model_spec(payload)
+                if model is None:
+                    raise ValueError("Invalid custom model")
+                return model
+
+        payload = {
+            "key": f"custom:{uuid.uuid4().hex[:12]}",
+            "title": title,
+            "model_name": model_name,
+            "engine": engine,
+        }
+        model = custom_model_spec(payload)
+        if model is None:
+            raise ValueError("Invalid custom model or unsupported engine")
+        payloads.append(payload)
+        self.defaults.setObject_forKey_(payloads, self.CUSTOM_MODELS_KEY)
+        return model
+
+    def remove_custom_model(self, key: str) -> bool:
+        current = self.custom_models
+        remaining = [model for model in current if model.key != key]
+        if len(remaining) == len(current):
+            return False
+        self.defaults.setObject_forKey_([self._model_payload(model) for model in remaining], self.CUSTOM_MODELS_KEY)
+        if self.model_selection == key:
+            self.model_selection = DEFAULT_MODEL_PRESET
+        return True
+
+    @staticmethod
+    def _model_payload(model: ModelSpec) -> dict:
+        return {
+            "key": model.key,
+            "title": model.title,
+            "model_name": model.model_name,
+            "engine": model.engine,
+        }
 
     @property
     def input_device(self) -> str:

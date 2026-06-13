@@ -1,0 +1,8 @@
+UI Audio by Kenney Vleugels (Kenney.nl)
+
+Source: https://kenney.nl/assets/ui-audio
+License: Creative Commons Zero (CC0 1.0)
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
+
+The source assets may be used in personal and commercial projects.
+Attribution is appreciated by the creator but is not required.

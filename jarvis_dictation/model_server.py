@@ -124,7 +124,7 @@ def serve(args: argparse.Namespace) -> None:
         SOCKET_PATH.unlink()
 
     model_name = resolve_model_name(args.model_preset, args.model_name)
-    model_engine = resolve_model_engine(args.model_preset, args.model_name)
+    model_engine = resolve_model_engine(args.model_preset, args.model_name, getattr(args, "model_engine", None))
     logging.info("Loading %s through %s into persistent MLX model server", model_name, model_engine)
     transcriber = MLXTranscriber(model_name=model_name, engine=model_engine)
     logging.info("Model server ready at %s", SOCKET_PATH)
@@ -197,6 +197,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the persistent local Jarvis dictation model server.")
     parser.add_argument("--model-preset", choices=sorted(MODEL_PRESETS), default=DEFAULT_MODEL_PRESET)
     parser.add_argument("--model-name", default=None, help="Override the preset with a Hugging Face model id or local path.")
+    parser.add_argument("--model-engine", choices=["mlx-audio", "parakeet-mlx"], default=None)
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--stop", action="store_true")
     parser.add_argument("--debug", action="store_true")

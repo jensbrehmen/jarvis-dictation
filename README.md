@@ -47,7 +47,8 @@ Alias mode creates a real, ad-hoc-signed `.app`, but it still uses this source t
 
 Open **Settings** from the Jarvis menu-bar icon.
 
-- **Speech model:** selects the local model that Jarvis keeps warm. Changing it restarts the model server.
+- **Speech model:** selects the local model that Jarvis keeps warm. Nemotron 3.5 is the default and recommended model. Changing it restarts the model server.
+- **Custom models:** choose **Add Open Source Model...** in the speech-model menu, enter a Hugging Face model ID, and select its compatible MLX engine. Saved models appear in the same menu and download locally on first use.
 - **Microphone:** follows the macOS system input by default, or can target a specific connected microphone. If that device is unavailable later, Jarvis falls back to the system default.
 - **Shortcut:** click the shortcut control, then press the key you want to use. Press `Escape` to cancel without changing it. Right Command is the default.
 - **Activation:** `Toggle` starts and stops dictation on separate shortcut presses. `Hold` records only while the shortcut is held down.
@@ -57,6 +58,20 @@ Open **Settings** from the Jarvis menu-bar icon.
 - **Warm model on launch:** starts and loads the selected model when Jarvis opens, trading memory usage for faster first dictation.
 
 Shortcut, microphone, activation, model, and behavior choices persist across app restarts.
+
+### Custom Open Source Models
+
+The settings app can save multiple compatible Hugging Face ASR checkpoints:
+
+1. Open **Settings** and open the **Speech model** menu.
+2. Choose **Add Open Source Model...**.
+3. Enter a display name and a Hugging Face ID such as `organization/model-name`.
+4. Choose **MLX Audio (Nemotron ASR)** for a compatible Nemotron checkpoint, or **Parakeet MLX** for a checkpoint exported for `parakeet-mlx`.
+5. Choose **Add Model**. Jarvis selects it, downloads it locally, and starts the persistent server.
+
+This is intentionally not a generic Transformers model runner. The checkpoint must match one of the supported MLX ASR loader architectures. Loading failures appear in the app status and model log.
+
+Removing a custom entry removes it from Jarvis settings but leaves its downloaded Hugging Face cache intact.
 
 ## Model
 
@@ -277,7 +292,9 @@ References:
 The `sonic-speech` INT8/INT4 checkpoints are interesting, but the current `parakeet-mlx` loader rejects their quantization tensors. Use them only with a loader version that explicitly supports those checkpoints:
 
 ```bash
-jarvis-dictation-server --model-name <compatible-model-id-or-local-path>
+jarvis-dictation-server \
+  --model-name <compatible-model-id-or-local-path> \
+  --model-engine parakeet-mlx
 ```
 
 Useful server commands:

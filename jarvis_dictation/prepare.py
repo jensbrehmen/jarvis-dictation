@@ -65,7 +65,7 @@ def check_audio_devices() -> dict:
 
 def prepare_model(args: argparse.Namespace) -> dict:
     model_name = resolve_model_name(args.model_preset, args.model_name)
-    model_engine = resolve_model_engine(args.model_preset, args.model_name)
+    model_engine = resolve_model_engine(args.model_preset, args.model_name, getattr(args, "model_engine", None))
     transcriber = MLXTranscriber(model_name=model_name, engine=model_engine)
     if args.smoke_seconds > 0:
         silence = np.zeros(int(SAMPLE_RATE * args.smoke_seconds), dtype=np.float32)
@@ -83,6 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare Jarvis dictation for smooth runtime startup.")
     parser.add_argument("--model-preset", choices=sorted(MODEL_PRESETS), default=DEFAULT_MODEL_PRESET)
     parser.add_argument("--model-name", default=None, help="Override the preset with a Hugging Face model id or local path.")
+    parser.add_argument("--model-engine", choices=["mlx-audio", "parakeet-mlx"], default=None)
     parser.add_argument("--smoke-seconds", type=float, default=1.0)
     parser.add_argument("--debug", action="store_true")
     return parser.parse_args()

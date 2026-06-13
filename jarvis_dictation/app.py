@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import wave
+from importlib.resources import files
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -66,131 +67,135 @@ def resolve_input_device(device_name: str | None) -> int | None:
 
 class FloatingOverlay:
     def __init__(self) -> None:
-        import AppKit
         from AppKit import (
             NSApplication,
             NSApplicationActivationPolicyAccessory,
-            NSAppearance,
-            NSAppearanceNameAqua,
             NSBackingStoreBuffered,
             NSColor,
-            NSFloatingWindowLevel,
             NSFont,
             NSFontWeightMedium,
+            NSScreenSaverWindowLevel,
             NSShadow,
             NSScreen,
             NSTextField,
-            NSVisualEffectBlendingModeBehindWindow,
-            NSVisualEffectMaterialPopover,
-            NSVisualEffectStateActive,
-            NSVisualEffectView,
             NSView,
             NSWindow,
+            NSWindowCollectionBehaviorCanJoinAllSpaces,
+            NSWindowCollectionBehaviorFullScreenAuxiliary,
+            NSWindowCollectionBehaviorStationary,
             NSWindowStyleMaskBorderless,
         )
         from Foundation import NSMakeRect
-        from Quartz import CALayer, CGPathCreateWithRoundedRect
+        from Quartz import (
+            CABasicAnimation,
+            CALayer,
+            CAMediaTimingFunction,
+            CGPathCreateWithRoundedRect,
+            kCAMediaTimingFunctionEaseOut,
+        )
 
         self.app = NSApplication.sharedApplication()
         self.app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
         self.NSMakeRect = NSMakeRect
         self.NSColor = NSColor
+        self.CABasicAnimation = CABasicAnimation
+        self.CAMediaTimingFunction = CAMediaTimingFunction
+        self.animation_timing_name = kCAMediaTimingFunctionEaseOut
 
-        screen = NSScreen.mainScreen().visibleFrame()
-        self.width = 328
-        self.height = 48
-        shadow_pad = 28
-        window_width = self.width + shadow_pad * 2
-        window_height = self.height + shadow_pad * 2
-        x = screen.origin.x + (screen.size.width - window_width) / 2
-        y = screen.origin.y + 28 - shadow_pad
-        frame = NSMakeRect(x, y, window_width, window_height)
+        self.NSScreen = NSScreen
+        self.width = 318
+        self.height = 70
+        self.shadow_pad_x = 18
+        self.shadow_pad_bottom = 28
+        self.top_bleed = 18
+        self.window_width = self.width + self.shadow_pad_x * 2
+        self.window_height = self.height + self.shadow_pad_bottom
+        frame = NSMakeRect(0, 0, self.window_width, self.window_height)
 
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, NSWindowStyleMaskBorderless, NSBackingStoreBuffered, False
         )
         self.window.setOpaque_(False)
         self.window.setBackgroundColor_(NSColor.clearColor())
-        self.window.setLevel_(NSFloatingWindowLevel)
+        self.window.setLevel_(NSScreenSaverWindowLevel)
         self.window.setIgnoresMouseEvents_(True)
         self.window.setHasShadow_(False)
-        light_appearance = NSAppearance.appearanceNamed_(NSAppearanceNameAqua)
-        self.window.setAppearance_(light_appearance)
+        self.window.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+            | NSWindowCollectionBehaviorStationary
+        )
+        self._position_window()
 
-        root = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, window_width, window_height))
+        root = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, self.window_width, self.window_height))
         root.setWantsLayer_(True)
-        root.layer().setMasksToBounds_(False)
+        root.layer().setMasksToBounds_(True)
         root.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
         self.window.setContentView_(root)
+        self.overlay_layer = root.layer()
 
         shadow_layer = CALayer.layer()
-        shadow_layer.setFrame_(NSMakeRect(shadow_pad, shadow_pad, self.width, self.height))
+        shadow_layer.setFrame_(
+            NSMakeRect(
+                self.shadow_pad_x,
+                self.shadow_pad_bottom,
+                self.width,
+                self.height + self.top_bleed,
+            )
+        )
         shadow_layer.setMasksToBounds_(False)
-        shadow_layer.setBackgroundColor_(NSColor.clearColor().CGColor())
+        shadow_layer.setCornerRadius_(18)
+        shadow_layer.setBackgroundColor_(NSColor.blackColor().CGColor())
         shadow_layer.setShadowColor_(NSColor.blackColor().CGColor())
-        shadow_layer.setShadowOpacity_(0.28)
-        shadow_layer.setShadowRadius_(12)
-        shadow_layer.setShadowOffset_((0, -10))
-        shadow_layer.setShadowPath_(CGPathCreateWithRoundedRect(NSMakeRect(0, 0, self.width, self.height), 20, 20, None))
+        shadow_layer.setShadowOpacity_(0.32)
+        shadow_layer.setShadowRadius_(11)
+        shadow_layer.setShadowOffset_((0, -6))
+        shadow_layer.setShadowPath_(
+            CGPathCreateWithRoundedRect(
+                NSMakeRect(0, 0, self.width, self.height + self.top_bleed),
+                18,
+                18,
+                None,
+            )
+        )
         root.layer().addSublayer_(shadow_layer)
 
-        shadow_host = NSView.alloc().initWithFrame_(NSMakeRect(shadow_pad, shadow_pad, self.width, self.height))
-        shadow_host.setWantsLayer_(True)
-        shadow_host.layer().setCornerRadius_(20)
-        shadow_host.layer().setMasksToBounds_(False)
-        shadow_host.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
-        root.addSubview_(shadow_host)
-
-        glass_tint = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, self.width, self.height))
-        glass_tint.setWantsLayer_(True)
-        glass_tint.layer().setCornerRadius_(20)
-        glass_tint.layer().setMasksToBounds_(True)
-        glass_tint.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.98, 0.99, 1.0, 0.20).CGColor()
+        notch_surface = NSView.alloc().initWithFrame_(
+            NSMakeRect(
+                self.shadow_pad_x,
+                self.shadow_pad_bottom,
+                self.width,
+                self.height + self.top_bleed,
+            )
         )
-
-        glass_class = getattr(AppKit, "NSGlassEffectView", None)
-        if glass_class is not None:
-            container = glass_class.alloc().initWithFrame_(NSMakeRect(0, 0, self.width, self.height))
-            container.setAppearance_(light_appearance)
-            container.setStyle_(getattr(AppKit, "NSGlassEffectViewStyleClear"))
-            container.setCornerRadius_(20)
-            container.setTintColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.16))
-            container.setContentView_(glass_tint)
-        else:
-            container = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, self.width, self.height))
-            container.setAppearance_(light_appearance)
-            container.setMaterial_(NSVisualEffectMaterialPopover)
-            container.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
-            container.setState_(NSVisualEffectStateActive)
-            container.setWantsLayer_(True)
-            container.layer().setCornerRadius_(20)
-            container.layer().setMasksToBounds_(True)
-            container.addSubview_(glass_tint)
-        shadow_host.addSubview_(container)
+        notch_surface.setWantsLayer_(True)
+        notch_surface.layer().setCornerRadius_(18)
+        notch_surface.layer().setMasksToBounds_(True)
+        notch_surface.layer().setBackgroundColor_(NSColor.blackColor().CGColor())
+        root.addSubview_(notch_surface)
 
         self.status_dot = NSView.alloc().initWithFrame_(NSMakeRect(22, 19, 10, 10))
         self.status_dot.setWantsLayer_(True)
         self.status_dot.layer().setCornerRadius_(5)
         self.status_dot.layer().setBackgroundColor_(
-            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.05, 0.08, 0.10, 0.78).CGColor()
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.25, 0.72, 0.95, 0.92).CGColor()
         )
-        glass_tint.addSubview_(self.status_dot)
+        notch_surface.addSubview_(self.status_dot)
 
         self.title = NSTextField.alloc().initWithFrame_(NSMakeRect(42, 10, 96, 24))
         self.title.setEditable_(False)
         self.title.setBordered_(False)
         self.title.setDrawsBackground_(False)
         self.title.setSelectable_(False)
-        self.title.setTextColor_(NSColor.colorWithCalibratedRed_green_blue_alpha_(0.04, 0.055, 0.065, 0.86))
+        self.title.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.92))
         self.title.setFont_(NSFont.systemFontOfSize_weight_(15, NSFontWeightMedium))
         text_shadow = NSShadow.alloc().init()
-        text_shadow.setShadowBlurRadius_(4)
+        text_shadow.setShadowBlurRadius_(3)
         text_shadow.setShadowOffset_((0, -1))
-        text_shadow.setShadowColor_(NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.18))
+        text_shadow.setShadowColor_(NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.65))
         self.title.setShadow_(text_shadow)
         self.title.setStringValue_("Listening")
-        glass_tint.addSubview_(self.title)
+        notch_surface.addSubview_(self.title)
 
         self.wave_bars = []
         self.wave_level = 0.0
@@ -205,10 +210,19 @@ class FloatingOverlay:
             bar.setWantsLayer_(True)
             bar.layer().setCornerRadius_(1.5)
             bar.layer().setBackgroundColor_(
-                NSColor.colorWithCalibratedRed_green_blue_alpha_(0.03, 0.06, 0.08, 0.30).CGColor()
+                NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.26).CGColor()
             )
-            glass_tint.addSubview_(bar)
+            notch_surface.addSubview_(bar)
             self.wave_bars.append(bar)
+
+    def _window_origin(self) -> tuple[float, float]:
+        screen = self.NSScreen.mainScreen().frame()
+        x = screen.origin.x + (screen.size.width - self.window_width) / 2
+        y = screen.origin.y + screen.size.height - self.window_height
+        return x, y
+
+    def _position_window(self) -> None:
+        self.window.setFrameOrigin_(self._window_origin())
 
     def show(self, text: str) -> None:
         from PyObjCTools import AppHelper
@@ -228,7 +242,7 @@ class FloatingOverlay:
     def hide(self) -> None:
         from PyObjCTools import AppHelper
 
-        AppHelper.callAfter(self.window.orderOut_, None)
+        AppHelper.callAfter(self._hide)
 
     def run(self) -> None:
         from PyObjCTools import AppHelper
@@ -243,7 +257,31 @@ class FloatingOverlay:
     def _show(self, text: str) -> None:
         self._update(text)
         self._update_level(0.0)
+        if self.window.isVisible():
+            return
+
+        self._position_window()
+        timing = self.CAMediaTimingFunction.functionWithName_(self.animation_timing_name)
+
+        fade = self.CABasicAnimation.animationWithKeyPath_("opacity")
+        fade.setFromValue_(0.0)
+        fade.setToValue_(1.0)
+        fade.setDuration_(0.14)
+        fade.setTimingFunction_(timing)
+
+        drop = self.CABasicAnimation.animationWithKeyPath_("transform.translation.y")
+        drop.setFromValue_(6.0)
+        drop.setToValue_(0.0)
+        drop.setDuration_(0.16)
+        drop.setTimingFunction_(timing)
+
+        self.overlay_layer.addAnimation_forKey_(fade, "overlayFadeIn")
+        self.overlay_layer.addAnimation_forKey_(drop, "overlayDropIn")
         self.window.orderFrontRegardless()
+
+    def _hide(self) -> None:
+        self.overlay_layer.removeAllAnimations()
+        self.window.orderOut_(None)
 
     def _update(self, text: str) -> None:
         clean = " ".join(text.split())
@@ -261,10 +299,11 @@ class FloatingOverlay:
         self.wave_level = max(level, self.wave_level * 0.72)
         self.wave_phase += 0.45
 
-        active_color = self.NSColor.colorWithCalibratedRed_green_blue_alpha_(
-            0.02, 0.055 + 0.04 * self.wave_level, 0.075 + 0.06 * self.wave_level, 0.54 + 0.26 * self.wave_level
+        active_color = self.NSColor.colorWithCalibratedWhite_alpha_(
+            1.0,
+            0.58 + 0.36 * self.wave_level,
         ).CGColor()
-        quiet_color = self.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.04, 0.07, 0.09, 0.26).CGColor()
+        quiet_color = self.NSColor.colorWithCalibratedWhite_alpha_(1.0, 0.26).CGColor()
 
         base_y = 14
         max_height = 20
@@ -279,11 +318,11 @@ class FloatingOverlay:
 
         if self.wave_level > 0.05:
             self.status_dot.layer().setBackgroundColor_(
-                self.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.02, 0.09, 0.12, 0.86).CGColor()
+                self.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.28, 0.78, 1.0, 1.0).CGColor()
             )
         else:
             self.status_dot.layer().setBackgroundColor_(
-                self.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.05, 0.08, 0.10, 0.58).CGColor()
+                self.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.20, 0.56, 0.76, 0.76).CGColor()
             )
 
 
@@ -359,8 +398,24 @@ class ClipboardPaster:
 class SoundCues:
     def __init__(self) -> None:
         self.enabled = True
-        self.start_sound = self._load_sound(("Pop", "Tink", "Glass"))
-        self.stop_sound = self.start_sound
+        self.primed = False
+        self.start_sound = self._load_sound("listening-start.wav", volume=0.23)
+        self.stop_sound = self._load_sound("listening-stop.wav", volume=0.19)
+
+    def prime(self) -> None:
+        if self.primed or not self.enabled or self.start_sound is None:
+            return
+        try:
+            volume = self.start_sound.volume()
+            self.start_sound.setVolume_(0.0)
+            self.start_sound.play()
+            time.sleep(0.025)
+            self.start_sound.stop()
+            self.start_sound.setCurrentTime_(0.0)
+            self.start_sound.setVolume_(volume)
+            self.primed = True
+        except Exception as exc:
+            logging.debug("Could not prime sound cues: %s", exc)
 
     def play_start(self) -> None:
         self._play(self.start_sound)
@@ -368,26 +423,34 @@ class SoundCues:
     def play_stop(self) -> None:
         self._play(self.stop_sound)
 
-    def _load_sound(self, names: tuple[str, ...]):
+    @staticmethod
+    def _load_sound(filename: str, volume: float):
         try:
-            from AppKit import NSSound
+            from AVFoundation import AVAudioPlayer
+            from Foundation import NSData
         except Exception as exc:  # pragma: no cover - depends on macOS frameworks
-            logging.debug("NSSound unavailable: %s", exc)
+            logging.debug("AVAudioPlayer unavailable: %s", exc)
             return None
 
-        for name in names:
-            sound = NSSound.soundNamed_(name)
-            if sound is not None:
-                sound.setVolume_(0.32)
-                return sound
-        return None
+        try:
+            wav_bytes = files("jarvis_dictation").joinpath("assets", "sounds", filename).read_bytes()
+            data = NSData.dataWithBytes_length_(wav_bytes, len(wav_bytes))
+            player, error = AVAudioPlayer.alloc().initWithData_error_(data, None)
+            if player is None:
+                raise RuntimeError(str(error or "unknown AVAudioPlayer error"))
+            player.setVolume_(volume)
+            player.prepareToPlay()
+            return player
+        except Exception as exc:
+            logging.debug("Could not load sound cue `%s`: %s", filename, exc)
+            return None
 
     def _play(self, sound) -> None:  # noqa: ANN001
         if not self.enabled or sound is None:
             return
         try:
-            sound.stop()
-            sound.play()
+            sound.setCurrentTime_(0.0)
+            sound.playAtTime_(sound.deviceCurrentTime() + 0.005)
         except Exception as exc:
             logging.debug("Could not play sound cue: %s", exc)
 
@@ -610,6 +673,7 @@ class DictationController:
         self.paster = ClipboardPaster(preserve_clipboard=preserve_clipboard)
         self.sounds = SoundCues()
         self.sounds.enabled = play_sounds
+        self.sounds.prime()
 
     def apply_preferences(
         self,
@@ -620,7 +684,10 @@ class DictationController:
         input_device: str | None,
     ) -> None:
         self.show_overlay = show_overlay
+        was_enabled = self.sounds.enabled
         self.sounds.enabled = play_sounds
+        if play_sounds and not was_enabled:
+            self.sounds.prime()
         self.paster.preserve_clipboard = preserve_clipboard
         self.input_device = input_device
 
@@ -684,6 +751,7 @@ class DictationController:
                 return
             self.loading = True
             self.cancel_start = False
+        self.sounds.play_start()
         threading.Thread(target=self._start_recording, daemon=True).start()
 
     def request_stop(self) -> None:
@@ -695,7 +763,6 @@ class DictationController:
     def _start_recording(self) -> None:
         self._set_state("connecting")
         self._show_overlay("Connecting to local model...")
-        self.sounds.play_start()
         try:
             transcriber = self._ensure_transcriber()
         except Exception:

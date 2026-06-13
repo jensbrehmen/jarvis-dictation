@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from jarvis_dictation.model_server import get_server_info, send_shutdown
-from jarvis_dictation.models import resolve_model_name
+from jarvis_dictation.models import DEFAULT_MODEL_PRESET, ModelSpec
 from jarvis_dictation.prepare import APP_SUPPORT_DIR
 
 
@@ -27,13 +27,13 @@ class ModelManager:
         self.operation: threading.Thread | None = None
         self.stopping = False
         self.owns_server = False
-        self.current_preset: str | None = None
+        self.current_model_key: str | None = None
 
-    def start_async(self, model_preset: str) -> None:
-        self._run_async(self._ensure_running, model_preset)
+    def start_async(self, model: ModelSpec) -> None:
+        self._run_async(self._ensure_running, model)
 
-    def restart_async(self, model_preset: str) -> None:
-        self._run_async(self._restart, model_preset)
+    def restart_async(self, model: ModelSpec) -> None:
+        self._run_async(self._restart, model)
 
     def stop_async(self) -> None:
         self._run_async(self._stop_server, True)
@@ -53,40 +53,33 @@ class ModelManager:
             self.operation = threading.Thread(target=target, args=args, daemon=True)
             self.operation.start()
 
-    def _ensure_running(self, model_preset: str) -> None:
-        requested_name = resolve_model_name(model_preset)
+    def _ensure_running(self, model: ModelSpec) -> None:
         info = get_server_info()
-        if info is not None and info.get("model_name") == requested_name:
+        if self._matches(info, model):
             self.owns_server = False
-            self.current_preset = model_preset
-            self._notify("ready", self._ready_message(model_preset), info)
+            self.current_model_key = model.key
+            self._notify("ready", self._ready_message(model), info)
             return
 
         if info is not None:
             self._notify("switching", "Switching speech model...", info)
             self._stop_server(True)
 
-        self._start_server(model_preset)
+        self._start_server(model)
 
-    def _restart(self, model_preset: str) -> None:
+    def _restart(self, model: ModelSpec) -> None:
         self._notify("switching", "Switching speech model...", get_server_info())
         self._stop_server(True)
-        self._start_server(model_preset)
+        self._start_server(model)
 
-    def _start_server(self, model_preset: str) -> None:
+    def _start_server(self, model: ModelSpec) -> None:
         if self.stopping:
             return
 
         APP_SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
-        self._notify("loading", f"Loading {self._display_name(model_preset)}...", None)
+        self._notify("loading", f"Loading {model.title}...", None)
 
-        command = [
-            str(self._worker_python()),
-            "-m",
-            "jarvis_dictation.model_server",
-            "--model-preset",
-            model_preset,
-        ]
+        command = self._server_command(model)
         try:
             self.log_file = Path(MODEL_LOG_PATH).open("ab", buffering=0)
             self.process = subprocess.Popen(
@@ -102,8 +95,7 @@ class ModelManager:
             self._notify("error", f"Could not start model: {exc}", None)
             return
 
-        deadline = time.monotonic() + 180.0
-        requested_name = resolve_model_name(model_preset)
+        deadline = time.monotonic() + (600.0 if not model.built_in else 180.0)
         while time.monotonic() < deadline and not self.stopping:
             if self.process.poll() is not None:
                 code = self.process.returncode
@@ -112,9 +104,9 @@ class ModelManager:
                 return
 
             info = get_server_info()
-            if info is not None and info.get("model_name") == requested_name:
-                self.current_preset = model_preset
-                self._notify("ready", self._ready_message(model_preset), info)
+            if self._matches(info, model):
+                self.current_model_key = model.key
+                self._notify("ready", self._ready_message(model), info)
                 return
             time.sleep(0.5)
 
@@ -143,7 +135,7 @@ class ModelManager:
 
         self.process = None
         self.owns_server = False
-        self.current_preset = None
+        self.current_model_key = None
         self._close_log()
         if not self.stopping:
             self._notify("stopped", "Model stopped", None)
@@ -159,16 +151,30 @@ class ModelManager:
             self.status_callback(state, message, info)
 
     @staticmethod
-    def _display_name(model_preset: str) -> str:
-        return {
-            "default": "Parakeet 0.6B",
-            "small-en": "Parakeet 110M English",
-            "nemotron": "Nemotron 3.5",
-        }.get(model_preset, model_preset)
+    def _matches(info: dict | None, model: ModelSpec) -> bool:
+        return bool(
+            info is not None
+            and info.get("model_name") == model.model_name
+            and info.get("model_engine") == model.engine
+        )
+
+    @staticmethod
+    def _ready_message(model: ModelSpec) -> str:
+        return f"{model.title} ready"
 
     @classmethod
-    def _ready_message(cls, model_preset: str) -> str:
-        return f"{cls._display_name(model_preset)} ready"
+    def _server_command(cls, model: ModelSpec) -> list[str]:
+        return [
+            str(cls._worker_python()),
+            "-m",
+            "jarvis_dictation.model_server",
+            "--model-preset",
+            model.key if model.built_in else DEFAULT_MODEL_PRESET,
+            "--model-name",
+            model.model_name,
+            "--model-engine",
+            model.engine,
+        ]
 
     @staticmethod
     def _worker_python() -> Path:
